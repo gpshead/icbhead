@@ -1,8 +1,11 @@
-#!/usr/bin/python
+#!/usr/bin/python3
 
 import getopt
+import getpass
+import http.client
+import json
 import os
-import pwd
+import re
 import select
 import signal
 import socket
@@ -11,15 +14,71 @@ try:
     import termios
 except ImportError:
     termios = None
+import textwrap
 import time
+
+
+# http://daringfireball.net/2010/07/improved_regex_for_matching_urls
+_EXTRACT_URL_RE = re.compile(r'(?i)\b((?:https?://|www\d{0,3}[.]|[a-z0-9.\-]+[.][a-z]{2,4}/)(?:[^\s()<>]+|\(([^\s()<>]+|(\([^\s()<>]+\)))*\))+(?:\(([^\s()<>]+|(\([^\s()<>]+\)))*\)|[^\s`!()\[\]{};:\'".,<>?«»“”‘’]))')
+
+# This is my API key for icbhead on goo.gl.  If it gets abused I will
+# simply burn it and keep it out of source control in the future.
+_ICBHEAD_URL_SHORTENER_API_KEY = 'AIzaSyDtceai_ZCBqny5SQf8ccvRCAEAnG8tOZI'
+
+
+def shorten_url(long_url, api_key=_ICBHEAD_URL_SHORTENER_API_KEY):
+    """Return a http://goo.gl/ shortened version of long_url; '' on failure."""
+    if api_key:
+        query_string = '?key=' + api_key
+    else:
+        query_string = ''
+    http_conn = http.client.HTTPSConnection('www.googleapis.com')
+    try:
+        http_conn.request('POST', '/urlshortener/v1/url' + query_string,
+                          headers={'Content-Type': 'application/json'},
+                          body=json.dumps({"longUrl": long_url}))
+        response = http_conn.getresponse()
+        if 200 <= response.status < 300:
+            json_data = response.read(8192).decode('utf8')
+            try:
+                goo_gl_response = json.loads(json_data)
+            except ValueError:
+                return ''
+            if 'id' in goo_gl_response:
+                return goo_gl_response['id']
+    finally:
+        http_conn.close()
+    return ''
+
+
+def shorten_long_urls(text, long_len=55):
+    """Return text with all long URLs replaced with short ones."""
+    urls = [group[0] for group in _EXTRACT_URL_RE.findall(text)]
+    if not urls:
+        return text
+    for url in urls:
+        if len(url) <= long_len:
+            continue
+        short_url = shorten_url(url)
+        if short_url:
+            text = text.replace(url, short_url)
+    return text
 
 
 class IcbConn(object):
     default_server = 'default'
     config_file = '/local/lib/servers'
     server_dict = {'default': ['default.icb.net', 7326]}
-    server_name = 'Evolve'
+
+    # While the ICB wire protocol could pass UTF-8 just fine, the
+    # existing icbd server implementations strip off all high bits.
+    codec = 'ascii'
+    # We will, however, be optimistic and hope that a server capable
+    # of sending us utf8 is run some day; we decode assuming utf8.
+    recv_codec = 'utf8'
+
     MAX_LINE = 239
+    MAX_INPUT_LINE = MAX_LINE * 2
 
     M_LOGIN = b'a'
     M_OPENMSG = b'b'
@@ -39,17 +98,17 @@ class IcbConn(object):
                   port=None):
         self.read_config_file()
         if logid is not None:
-            self.logid = logid
+            self.logid = logid.encode(self.codec)
         else:
-            self.logid = pwd.getpwuid(os.getuid())[0]
+            self.logid = getpass.getuser().encode(self.codec)
         if nic is not None:
-            self.nickname = nic
+            self.nickname = nic.encode(self.codec)
         else:
             self.nickname = self.logid
         if group is not None:
-            self.group = group
+            self.group = group.encode(self.codec)
         else:
-            self.group = '1'
+            self.group = b'1'
         if server is not None:
             server = server.lower()
             if server in self.server_dict:
@@ -107,7 +166,6 @@ class IcbConn(object):
         retval = bytearray()
         amt_read = 0
         while amt_read < length:
-            # TODO(gps): use recv_into()
             retval += self.socket.recv(length - amt_read)
             amt_read = len(retval)
         return retval
@@ -126,18 +184,22 @@ class IcbConn(object):
         return return_list
 
     def send(self, msglist):
-        msg = msglist[0]
+        print('~send =', repr(msglist))
+        msg = bytearray(1)  # Room at the front for a one byte length.
+        msg += msglist[0]
         try:
             msg += msglist[1]
         except:
-            pass  # XXX(gps): ???
+            print('send ignoring exception on msglist[1] append.')
+            pass  # XXX(gps): what is this for ???
         for i in msglist[2:]:
             msg += b'\001' + i
         msg += b'\000'
-        if len(msg) > 254:
-            print '*** mesg too long, truncating ***'
-            msg = msg[:254]
-        self.socket.send(chr(len(msg))+msg)
+        if len(msg) > 255:
+            print('*** mesg too long, truncating ***')
+            msg = msg[:255]
+        msg[0] = len(msg) - 1  # Fill in the length (sans length byte).
+        self.socket.send(msg)
 
     def login(self, command=b'login'):
         self.send([self.M_LOGIN, self.logid, self.nickname, self.group,
@@ -146,11 +208,62 @@ class IcbConn(object):
     def close(self):
         self.socket.close()
 
+    def _encode(self, message):
+        if isinstance(message, str):
+            return message.encode(self.codec, 'replace')
+        return message
+
+    def _decode(self, message):
+        if isinstance(message, str):
+            return message
+        return message.decode(self.recv_codec)
+
+    def _wrap_and_encode(self, msg, max_bytes):
+        """Wrap and encode a message into a list of byte strings to be sent.
+
+        Given a message, wrap it and encode it using our codec into bytes
+        such that each individual message is less than max_bytes long.
+
+        Args:
+            msg: A non-empty unicode message to encode to a sequence of byte
+                strings each no longer than max_bytes.
+            max_bytes: The maximum number of bytes in any output element.
+        Returns:
+            A list of byte strings containing the contents of msg.
+        Raises:
+            ValueError: If wrapping and encoding for some reason cannot
+                be done within the given constraints or if msg was empty.
+        """
+        min_len = 20  # Way shorter than is reasonable.
+        wrap_width = max_bytes
+        while wrap_width > min_len:
+            messages = textwrap.wrap(msg, width=wrap_width)
+            if not messages:
+                raise ValueError('msg was empty or 100% whitespace.')
+            encoded_messages = [self._encode(msg) for msg in messages]
+            encoded_lengths = sorted(len(emsg) for emsg in encoded_messages)
+            max_encoded_length = encoded_lengths[-1]
+            # If one of the encoded messages is longer than max_bytes,
+            # reduce max_bytes based roughly on how far over it was
+            # and retry wrapping and encoding.
+            if max_encoded_length > max_bytes:
+                scale_factor = (max_bytes / max_encoded_length) ** 0.6
+                assert scale_factor < 1
+                wrap_width = int((wrap_width - 1) * scale_factor)
+                print(scale_factor, wrap_width)
+                continue
+            return encoded_messages
+        raise ValueError('Unable to text wrap and encode {0!r} into bytes'
+                         ' of length {1} or less.'.format(msg, max_bytes))
+
     def openmsg(self, msg):
-        self.send([self.M_OPENMSG, msg])
+        msg = shorten_long_urls(msg)
+        encoded_messages = self._wrap_and_encode(msg, self.MAX_LINE)
+        for encoded_msg in encoded_messages:
+            self.send([self.M_OPENMSG, encoded_msg])
 
     def command(self, cmd, args):
-        self.send([self.M_COMMAND, cmd, args])
+        self.send([self.M_COMMAND, self._encode(cmd), self._encode(args)])
 
 
 class IcbSimple(IcbConn):
@@ -161,7 +274,6 @@ class IcbSimple(IcbConn):
     term_width = 80
     term_height = 24
     right_margin = 2
-    codec = 'latin1'
     input_file = sys.stdin
     output_file = sys.stdout
     class IcbQuitException(Exception):
@@ -178,7 +290,7 @@ class IcbSimple(IcbConn):
         if secs >= 3600:
             return '%dh%dm' % (int(secs/3600), int((secs%3600)/60))
 
-    def print_line(self,line):
+    def print_line(self, line):
         output_line = line
         now = time.time()
         if (self.alert_mode == 1) and (now - self.last_alert > 0.5):
@@ -190,36 +302,29 @@ class IcbSimple(IcbConn):
     def indent_print(self, indent, msg):
         left = 0
         max_line = self.term_width - len(indent) - 1 - self.right_margin
-        while len(msg) - left > max_line:
-            right = left + max_line
-            while right > left and msg[right] not in ' \t-':
-                right = right - 1
-            if right == left:
-                right = left + max_line - 1
-                self.print_line('%s %s-' % (indent, msg[left:right]))
-            else:
-                right = right + 1
-                self.print_line('%s %s' % (indent, msg[left:right]))
-            left = right
-        self.print_line('%s %s' % (indent, msg[left:]))
-
-    def _decode(self, message):
-        if isinstance(message, str):
-            return message
-        return message.decode(self.codec)
+        wrapped_msgs = textwrap.wrap(msg, max_line)
+        for msg in wrapped_msgs:
+            self.print_line('{} {}'.format(indent, msg))
 
     def do_M_LOGIN(self, p):
+        print(p)
         self.print_line('Logged in.')
 
     def do_M_OPENMSG(self, p):
-        prefix = self._decode(p[1])
+        username = self._decode(p[1])
         msg = self._decode(p[2])
-        self.indent_print('<'+prefix+'>', msg)
+        # This breaks and wraps lines including useful things like
+        # URLs. eek! ugh.
+        #self.indent_print('<'+prefix+'>', msg)
+        self.print_line('<{0}> {1}'.format(username, msg))
 
     def do_M_PERSONAL(self, p):
-        prefix = self._decode(p[1])
+        username = self._decode(p[1])
         msg = self._decode(p[2])
-        self.indent_print('<*'+prefix+'*>', msg)
+        # This breaks and wraps lines including useful things like
+        # URLs. eek! ugh.
+        #self.indent_print('<*'+prefix+'*>', msg)
+        self.print_line('<*{0}*> {1}'.format(username, msg))
 
     def do_M_STATUS(self, p):
         prefix = self._decode(p[1])
@@ -332,10 +437,10 @@ class IcbSimple(IcbConn):
                        '%s has annoyingly beeped you.' % self._decode(p[1])])
 
     def do_M_PING(self, p):
-        print 'ping'
+        print('ping')
 
     def do_M_PONG(self, p):
-        print 'pong'
+        print('pong')
 
     def do_M_unknown(self, p):
         self.print_line('unknown packet: ' + repr(p))
@@ -400,16 +505,19 @@ class IcbSimple(IcbConn):
         return user_ready, server_ready
 
     def user_recv(self):
-        self.userline = self.input_file.readline()
-        self.userline = self.userline.rstrip()
-        if len(self.userline) > self.MAX_LINE:
-            self.indent_print('[ Error ]', 'input line too long, truncating...')
-            self.userline = self.userline[:MAX_LINE]
+        return self.input_file.readline().rstrip()
+
+    def _truncate_long_userinput(self, userline):
+        if len(userline) > self.MAX_LINE:
+            userline = userline[:MAX_LINE]
+            self.indent_print('[ Error ]', 'input line too long.')
+            self.indent_print('[ Error ]', 'truncated to: \'%s\'' % userline)
+        return userline
 
     def process_cmd(self, cmd, line):
-        if cmd == b'q':
+        if cmd == 'q':
             raise self.IcbQuitException
-        elif cmd == b'alert':
+        elif cmd == 'alert':
             if self.alert_mode == 0:
                 self.alert_mode = 1
                 self.show([self.M_STATUS, 'Status',
@@ -417,7 +525,7 @@ class IcbSimple(IcbConn):
             else:
                 self.show([self.M_STATUS, 'Status',
                            'd00d: alert mode already enabled.'])
-        elif cmd == b'noalert':
+        elif cmd == 'noalert':
             if self.alert_mode == 1:
                 self.alert_mode = 0
                 self.show([self.M_STATUS, 'Status',
@@ -425,7 +533,7 @@ class IcbSimple(IcbConn):
             else:
                 self.show([self.M_STATUS, 'Status',
                            'd00d: alert mode already disabled.'])
-        elif cmd == b'beep':
+        elif cmd == 'beep':
             if line != '':
                 self.command(cmd, line)
             elif self.beeps_ok == 1:
@@ -434,14 +542,14 @@ class IcbSimple(IcbConn):
                 self.beeps_ok = 1
                 self.show([self.M_STATUS, 'Status',
                            'folks can now annoyingly beep you.'])
-        elif cmd == b'nobeep':
+        elif cmd == 'nobeep':
             if self.beeps_ok == 0:
                 self.show([self.M_STATUS, 'Status', 'beeps already disabled.'])
             else:
                 self.beeps_ok = 0
                 self.show([self.M_STATUS, 'Status',
                            'folks can no longer annoyingly beep you.'])
-        elif cmd == b'm':
+        elif cmd == 'm':
             s = line.split()
             if len(s) > 0:
                 if s[0] in self.m_personal_history:
@@ -454,27 +562,27 @@ class IcbSimple(IcbConn):
     def _parse_cmd(self, command_line):
         cmd_split = 0
         while (cmd_split < len(command_line) and
-               command_line[cmd_split] not in b' \t'):
+               command_line[cmd_split] not in ' \t'):
             cmd_split += 1
         cmd = command_line[:cmd_split].lower()
         if cmd_split < len(command_line):
             cmd_split += 1
         self.process_cmd(cmd, command_line[cmd_split:])
 
-    def process_user(self, userline = None):
-        if userline is None:
-            userline = self.userline
-        if userline is not None:
-            if userline.startswith(b'/'):
-                if len(userline) > 1:
-                    if userline[1] == b'/':
-                        self.openmsg(userline[1:])
-                    else:
-                        self._parse_cmd(userline[1:])
+    def process_user(self, userline):
+        if not userline:
+            return
+        if userline.startswith('/'):
+            if len(userline) > 1:
+                if userline[1] == '/':
+                    self.openmsg(userline[1:])
                 else:
-                    self.show([self.M_STATUS, 'Error', 'empty command'])
+                    userline = self._truncate_long_userinput(userline)
+                    self._parse_cmd(userline[1:])
             else:
-                self.openmsg(userline)
+                self.show([self.M_STATUS, 'Error', 'empty command'])
+        else:
+            self.openmsg(userline)
 
 
 class IcbTerminalApp(IcbSimple):
@@ -523,30 +631,30 @@ class IcbTerminalApp(IcbSimple):
             self.print_line(i, remember=False)
 
     def process_cmd(self, cmd, line):
-        if cmd == b'display':
+        if cmd == 'display':
             self.do_display_cmd(cmd, line)
-        elif cmd == b'page':
+        elif cmd == 'page':
             if not self.page_mode:
                 self.show([self.M_STATUS, 'Status', 'Page mode enabled.'])
             else:
                 self.show([self.M_STATUS, 'Status',
                            'd00d: Page mode already enabled.'])
             self.page_mode = 1
-        elif cmd == b'nopage':
+        elif cmd == 'nopage':
             if self.page_mode:
                 self.show([self.M_STATUS, 'Status', 'Page mode enabled.'])
             else:
                 self.show([self.M_STATUS, 'Status',
                            'd00d: Page mode already enabled.'])
             self.page_mode = 0
-        elif cmd == b'm':
-            self._remember_line (b'/m %s' % line)
+        elif cmd == 'm':
+            self._remember_line('/m %s' % line)
             IcbSimple.process_cmd(self, cmd, line)
         else:
             IcbSimple.process_cmd(self, cmd, line)
 
     def openmsg(self, msg):
-        self._remember_line(b'--> ' + msg)
+        self._remember_line('--> ' + msg)
         IcbSimple.openmsg(self, msg)
 
     def _remember_line(self,line):
@@ -558,17 +666,17 @@ class IcbTerminalApp(IcbSimple):
             self._remember_line(line)
         self.num_lines += 1
         if self.page_mode and (self.num_lines >= self.term_height - 1):
-            self.output_file.write(b'\r-- more --')
+            self.output_file.write('\r-- more --')
             self.output_file.flush()
             self.input_file.read(1)
             self.num_lines = 0
-            self.output_file.write(b'\r           \r')
+            self.output_file.write('\r           \r')
             self.output_file.flush()
         IcbSimple.print_line(self,line)
 
     def _backspace(self, n):
         while n > 0:
-            self.output_file.write(b'\b \b')
+            self.output_file.write('\b \b')
             n -= 1
 
     ##
@@ -580,21 +688,21 @@ class IcbTerminalApp(IcbSimple):
     ##     line after this character has been processed
     ##
     def process_char(self, c, line):
-        if   c in (b'\r', b'\n'):
-            self.output_file.write(b'\n')
+        if   c in ('\r', '\n'):
+            self.output_file.write('\n')
             self.output_file.flush()
             return (1, line)
-        elif c == b'\022': # redraw line
+        elif c == '\022': # redraw line
             self.output_file.write('\r' + line)
             self.output_file.flush()
-        elif (c == b'\025' or
+        elif (c == '\025' or
               (termios and
                c == self.old_termios[6][termios.VKILL])): # kill-line
             self._backspace(len(line))
             self.output_file.flush()
             line = ''
             return (1, line)
-        elif (c == b'\010' or
+        elif (c == '\010' or
               (termios and
                c == self.old_termios[6][termios.VERASE])): # backspace
             if len(line) > 0:
@@ -603,23 +711,23 @@ class IcbTerminalApp(IcbSimple):
                 self.output_file.flush()
             if len(line) == 0:
                 return (1, line)
-        elif (c == b'\027' or
+        elif (c == '\027' or
               (termios and
                c == self.old_termios[6][termios.VWERASE])): # word-erase
             oldlen = len(line)
-            while line != '' and line[-1] in b' \t':
+            while line != '' and line[-1] in ' \t':
                 line = line[:-1]
-            while line != '' and line[-1] not in b' \t':
+            while line != '' and line[-1] not in ' \t':
                 line = line[:-1]
             if oldlen > 0:
                 self._backspace(oldlen - len(line))
                 self.output_file.flush()
         elif ord(c) >= 0x20 and ord(c) < 0x7f: # YUK, there should be a string.printable
-            if len(line) > self.MAX_LINE:
+            if len(line) > self.MAX_INPUT_LINE:
                 self.output_file.write('\007')
                 self.output_file.flush()
             else:
-                line = line + c
+                line += c
                 self.output_file.write(c)
                 self.output_file.flush()
                 self.do_history = 0
@@ -627,8 +735,7 @@ class IcbTerminalApp(IcbSimple):
             if self.m_personal_history != []:
                 if line != '':
                     self._backspace(len(line))
-                line = (b'/m ' + self.m_personal_history[self.last_m_personal]
-                        + b' ')
+                line = '/m %s ' % self.m_personal_history[self.last_m_personal]
                 self.output_file.write(line)
                 self.output_file.flush()
                 self.last_m_personal = self.last_m_personal - 1
@@ -637,33 +744,28 @@ class IcbTerminalApp(IcbSimple):
         else:
             ## unknown character, ignore
             pass
-        if line == b'':
+        if line == '':
             return (1, line)
         else:
             return (0, line)
 
-    def readline(self,file):
+    def readline(self, fileobj):
         self.num_lines = 0
-        line = b''
+        line = ''
         self.last_m_personal = len(self.m_personal_history) - 1
         self.do_history = 1
         while True:
             try:
-                c = file.read(1)
+                c = fileobj.read(1)
                 done, line = self.process_char(c, line)
                 if done:
                     break
             except IOError:
                 pass
-        if line == b'':
-            return None
-        else:
-            return line
+        return line
 
     def user_recv(self):
-        self.userline = self.readline(self.input_file)
-        if self.userline is not None and self.userline[-1] == '\n':
-            self.userline = self.userline[:-1]
+        return self.readline(self.input_file).rstrip()
 
     def mainloop(self):
         self.set_cbreak()
@@ -673,14 +775,14 @@ class IcbTerminalApp(IcbSimple):
                 try:
                     user_ready, server_ready = self.select()
                     if user_ready:
-                        self.user_recv()
-                        self.process_user()
+                        userline = self.user_recv()
+                        self.process_user(userline)
                     if server_ready:
                         self.recv()
                         self.show()
 
                 except KeyboardInterrupt:
-                    self.output_file.write ( 'really exit? [yn]' )
+                    self.output_file.write('really exit? [yn]')
                     ans = self.input_file.read(1)
                     if ans[0] in 'yY\n':
                         self.output_file.write('\nexiting...\n')
@@ -704,7 +806,6 @@ class IcbTerminalApp(IcbSimple):
         nick = None
         logid = None
         group = None
-        command = 'login'
         server = None
 
         self.display_buffer_length = self.default_display_buffer
@@ -722,7 +823,7 @@ class IcbTerminalApp(IcbSimple):
         # process args
         try:
             optlist, args = getopt.getopt(sys.argv[1:],'g:n:l:s:w')
-        except getopt.error, detail:
+        except getopt.error as detail:
             self.print_line('error: %r' % detail)
             self.print_line('usage: %s [-g group] [-n nickname] [-l login] [-s server] [-w]' % (sys.argv[0]))
             return
@@ -734,7 +835,7 @@ class IcbTerminalApp(IcbSimple):
             elif i[0] == '-l':
                 logid = i[1]
             elif i[0] == '-w':
-                command = 'w'
+                command = b'w'
             elif i[0] == '-s':
                 server = i[1]
 
@@ -745,10 +846,10 @@ class IcbTerminalApp(IcbSimple):
         # TODO(gps): Remove this connect/login/mainloop from the constructor.
         try:
             self.connect()
-        except socket.error, detail:
+        except socket.error as detail:
             self.print_line("can't connect to server: %s" % (detail))
             return
-        self.login(command)
+        self.login()
         self.mainloop()
 
 
@@ -760,7 +861,7 @@ if __name__ == '__main__':
     customfile = os.environ['HOME'] + '/.icbrc'
     try:
         # TODO(gps): eew!  die.  die.
-        execfile(customfile)
+        exec(open(customfile).read())
     except IOError:
         pass
     session = IcbPersonalized()
