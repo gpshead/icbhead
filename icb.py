@@ -2,10 +2,7 @@
 
 import getopt
 import getpass
-import http.client
-import json
 import os
-import re
 import select
 import signal
 import socket
@@ -17,57 +14,17 @@ except ImportError:
 import textwrap
 import time
 
+import goo_gl
 
-# http://daringfireball.net/2010/07/improved_regex_for_matching_urls
-_EXTRACT_URL_RE = re.compile(r'(?i)\b((?:https?://|www\d{0,3}[.]|[a-z0-9.\-]+[.][a-z]{2,4}/)(?:[^\s()<>]+|\(([^\s()<>]+|(\([^\s()<>]+\)))*\))+(?:\(([^\s()<>]+|(\([^\s()<>]+\)))*\)|[^\s`!()\[\]{};:\'".,<>?«»“”‘’]))')
 
 # This is my API key for icbhead on goo.gl.  If it gets abused I will
 # simply burn it and keep it out of source control in the future.
 _ICBHEAD_URL_SHORTENER_API_KEY = 'AIzaSyDtceai_ZCBqny5SQf8ccvRCAEAnG8tOZI'
 
 
-def shorten_url(long_url, api_key=_ICBHEAD_URL_SHORTENER_API_KEY):
-    """Return a http://goo.gl/ shortened version of long_url; '' on failure."""
-    if api_key:
-        query_string = '?key=' + api_key
-    else:
-        query_string = ''
-    http_conn = http.client.HTTPSConnection('www.googleapis.com')
-    try:
-        http_conn.request('POST', '/urlshortener/v1/url' + query_string,
-                          headers={'Content-Type': 'application/json'},
-                          body=json.dumps({"longUrl": long_url}))
-        response = http_conn.getresponse()
-        if 200 <= response.status < 300:
-            json_data = response.read(8192).decode('utf8')
-            try:
-                goo_gl_response = json.loads(json_data)
-            except ValueError:
-                return ''
-            if 'id' in goo_gl_response:
-                return goo_gl_response['id']
-    finally:
-        http_conn.close()
-    return ''
-
-
-def shorten_long_urls(text, long_len=55):
-    """Return text with all long URLs replaced with short ones."""
-    urls = [group[0] for group in _EXTRACT_URL_RE.findall(text)]
-    if not urls:
-        return text
-    for url in urls:
-        if len(url) <= long_len:
-            continue
-        short_url = shorten_url(url)
-        if short_url:
-            text = text.replace(url, short_url)
-    return text
-
-
 class IcbConn(object):
     default_server = 'default'
-    config_file = '/local/lib/servers'
+    config_file = '~/.icbheadrc'
     server_dict = {'default': ['default.icb.net', 7326]}
 
     # While the ICB wire protocol could pass UTF-8 just fine, the
@@ -108,7 +65,7 @@ class IcbConn(object):
         if group is not None:
             self.group = group.encode(self.codec)
         else:
-            self.group = b'1'
+            self.group = b'~IDLE~'
         if server is not None:
             server = server.lower()
             if server in self.server_dict:
@@ -250,14 +207,13 @@ class IcbConn(object):
                 scale_factor = (max_bytes / max_encoded_length) ** 0.6
                 assert scale_factor < 1
                 wrap_width = int((wrap_width - 1) * scale_factor)
-                print(scale_factor, wrap_width)
                 continue
             return encoded_messages
         raise ValueError('Unable to text wrap and encode {0!r} into bytes'
                          ' of length {1} or less.'.format(msg, max_bytes))
 
     def openmsg(self, msg):
-        msg = shorten_long_urls(msg)
+        msg = goo_gl.shorten_long_urls(msg, api_key=_ICBHEAD_URL_SHORTENER_API_KEY)
         encoded_messages = self._wrap_and_encode(msg, self.MAX_LINE)
         for encoded_msg in encoded_messages:
             self.send([self.M_OPENMSG, encoded_msg])
