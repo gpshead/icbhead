@@ -141,7 +141,6 @@ class IcbConn(object):
         return return_list
 
     def send(self, msglist):
-        print('~send =', repr(msglist))
         msg = bytearray(1)  # Room at the front for a one byte length.
         msg += msglist[0]
         try:
