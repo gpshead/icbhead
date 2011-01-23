@@ -23,6 +23,7 @@ _ICBHEAD_URL_SHORTENER_API_KEY = 'AIzaSyDtceai_ZCBqny5SQf8ccvRCAEAnG8tOZI'
 
 
 class IcbConn(object):
+    _debug = False
     default_server = 'default'
     config_file = '~/.icbheadrc'
     server_dict = {'default': ['default.icb.net', 7326]}
@@ -51,8 +52,8 @@ class IcbConn(object):
     M_PING = b'l'
     M_PONG = b'm'
 
-    def __init__ (self, nic=None, group=None, logid=None, server=None,
-                  port=None):
+    def __init__(self, nic=None, group=None, logid=None, server=None,
+                 port=None):
         self.read_config_file()
         if logid is not None:
             self.logid = logid.encode(self.codec)
@@ -138,9 +139,13 @@ class IcbConn(object):
         return_list = [bytes(msg[0:1])]
         if len(msg) > 2:
             return_list.extend(bytes(m) for m in msg[1:-1].split(b'\001'))
+        if self._debug:
+            print('DBG: recv {}'.format(return_list))
         return return_list
 
     def send(self, msglist):
+        if self._debug:
+            print('DBG: send {}'.format(msglist))
         msg = bytearray(1)  # Room at the front for a one byte length.
         msg += msglist[0]
         try:
@@ -523,6 +528,11 @@ class IcbSimple(IcbConn):
                     self.m_personal_history.remove(s[0])
                 self.m_personal_history.append(s[0])
             self.command(cmd, line)
+        elif cmd == 'debug':
+            self._debug = not self._debug
+            on_off = self._debug and 'ON' or 'OFF'
+            self.show([self.M_STATUS, 'Status',
+                       'icbhead debug mode turned {}.'.format(on_off)])
         else:
             self.command(cmd, line)
 
