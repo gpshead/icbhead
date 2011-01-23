@@ -235,12 +235,13 @@ class IcbSimple(IcbConn):
     class IcbQuitException(Exception):
         """Used internally to signal when to close this icb session."""
     m_personal_history = []
+    _day_of_month = -1
 
-    def pretty_time(self,secs):
+    def pretty_time(self, secs):
         if secs == 0:
             return '-'
         if secs < 60:
-            return '%ds' % (secs)
+            return '%ds' % secs
         if secs < 3600:
             return '%dm%ds' % (int(secs/60), secs % 60)
         if secs >= 3600:
@@ -262,6 +263,16 @@ class IcbSimple(IcbConn):
         for msg in wrapped_msgs:
             self.print_line('{} {}'.format(indent, msg))
 
+    @property
+    def _time(self):
+        localtime = time.localtime()
+        day_of_month = localtime[2]
+        if day_of_month == self._day_of_month:
+            return time.strftime('%H:%M', localtime)
+        else:
+            self._day_of_month = day_of_month
+            return time.strftime('%b %d %H:%M', localtime)
+
     def do_M_LOGIN(self, p):
         print(p)
         self.print_line('Logged in.')
@@ -272,7 +283,8 @@ class IcbSimple(IcbConn):
         # This breaks and wraps lines including useful things like
         # URLs. eek! ugh.
         #self.indent_print('<'+prefix+'>', msg)
-        self.print_line('<{0}> {1}'.format(username, msg))
+        self.print_line('{time} <{user}> {msg}'.format(
+                time=self._time, user=username, msg=msg))
 
     def do_M_PERSONAL(self, p):
         username = self._decode(p[1])
@@ -280,7 +292,8 @@ class IcbSimple(IcbConn):
         # This breaks and wraps lines including useful things like
         # URLs. eek! ugh.
         #self.indent_print('<*'+prefix+'*>', msg)
-        self.print_line('<*{0}*> {1}'.format(username, msg))
+        self.print_line('{time} <*{user}*> {msg}'.format(
+                time=self._time, user=username, msg=msg))
 
     def do_M_STATUS(self, p):
         prefix = self._decode(p[1])
@@ -373,7 +386,6 @@ class IcbSimple(IcbConn):
             self.do_C_unknown(p)
 
     def do_M_PROTO(self, p):
-        # TODO(gps): should server and host id's be decoded using our codec?
         if len(p) > 3:
             server_id = self._decode(p[3])
         else:
