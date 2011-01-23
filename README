@@ -8,5 +8,15 @@ there is no real license on this.  Use it at your own risk.
 
 I'll sort that out later, I'd like to Apache 2 license the entire thing.
 
+Status:
+* bare bones, differences from the old icb.py so far are:
+  - Requires Python 3.1 or later to run.
+    (how's that for keeping the rabble away?)
+  - No longer word wraps long lines coming from other people as open
+    messages as that breaks URLs.
+  - Does word wrap your own longer than 239 char lines into multiple
+    messages.  Up to 2x that limit anyways (don't be line spammy).
+  - Does shorten long URLs in your own lines using goo.gl.
+
 Gregory P. Smith
 greg@krypto.org
