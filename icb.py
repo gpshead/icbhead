@@ -670,7 +670,7 @@ class IcbTerminalApp(IcbSimple):
             self.output_file.flush()
             line = ''
             return (1, line)
-        elif (c == '\010' or
+        elif (c == '\010' or c == '\x7f' or
               (termios and
                c == self.old_termios[6][termios.VERASE])): # backspace
             if len(line) > 0:
