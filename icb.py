@@ -4,6 +4,7 @@
 import getpass
 import optparse  # For 3.1 compatibility.  I'd rather use argparse.
 import os
+import random
 import select
 import signal
 import socket
@@ -19,7 +20,10 @@ import time
 import goo_gl
 
 
-DEFAULT_GROUP = '~IDLE~'
+DEFAULT_GROUP = '~IDLE~'  # Join this group on login if none was specified.
+# Help avoid NAT timeout disconnects.  If no communication between client
+# and server has happened in up to this long a server ping will be sent.
+KEEPALIVE_SECONDS = 1543
 
 
 # This is my API key for icbhead on goo.gl.  If it gets abused I will
@@ -32,6 +36,7 @@ _now_tuple = time.localtime
 
 
 class IcbConn(object):
+    """Base class implementing the details of the ICB protocol."""
     _debug = False
     default_server = 'default'
     config_file = '~/.icbheadrc'
@@ -46,11 +51,6 @@ class IcbConn(object):
 
     MAX_LINE = 239
     MAX_INPUT_LINE = MAX_LINE * 2
-
-    # Help avoid NAT timeouts or other network disconnect issues.  If no
-    # communication between client and server has happened in this long,
-    # send a ping and ignore the response.
-    KEEPALIVE_SECONDS = 1543
 
     M_LOGIN = b'a'
     M_OPENMSG = b'b'
@@ -101,6 +101,7 @@ class IcbConn(object):
         self._last_data_time = 0
 
     def read_config_file(self, config_file=None):
+        # TODO(gps): Rewrite this using configparser. Allow more config.
         if config_file is None:
             config_file = self.config_file
         try:
@@ -138,19 +139,23 @@ class IcbConn(object):
         return self.socket.fileno()
 
     def __recv(self, length):
-        retval = bytearray()
-        amt_read = 0
-        while amt_read < length:
-            retval += self.socket.recv(length - amt_read)
-            amt_read = len(retval)
-        return retval
+        memory = memoryview(bytearray(length))
+        offset = 0
+        while offset < length:
+            num_read = self.socket.recv_into(memory[offset:])
+            if not num_read:
+                raise socket.error('Remote socket shutdown.')
+            offset += num_read
+        return memory
 
     def recv(self):
-        msg = b''
+        msg = bytearray()
         length = ord(self.socket.recv(1))
         while length == 0:
             msg += self.__recv(255)
             length = ord(self.socket.recv(1))
+            if len(msg) > 256*1024:
+                raise Error('Runaway recv. Bailing after 256k.')
         if length != 1:
             msg += self.__recv(length)
         self._last_data_time = _now()
@@ -444,13 +449,7 @@ class IcbSimple(IcbConn):
     def do_M_unknown(self, p):
         self.print_line('unknown packet: ' + repr(p))
 
-    def recv(self):
-        self.last_packet = IcbConn.recv(self)
-        return self.last_packet
-
-    def show(self, p=None):
-        if p is None:
-            p = self.last_packet
+    def show(self, p):
         c = p[0]
 
         # TODO(gps): make a decorated dispatch table.
@@ -483,7 +482,13 @@ class IcbSimple(IcbConn):
 
     @property
     def _keepalive_expire_time(self):
-        return self._last_data_time + self.KEEPALIVE_SECONDS
+        try:
+            return self._last_data_time + self._keepalive_seconds
+        finally:
+            # Fuzz the keepalive interval to avoid many clients
+            # syncing up and DOSing the server.
+            self._keepalive_seconds = ((1.0 - random.random()/5) *
+                                       KEEPALIVE_SECONDS)
 
     def select(self):
         user_ready = 0
@@ -596,9 +601,42 @@ class IcbSimple(IcbConn):
 
 
 class IcbTerminalApp(IcbSimple):
+    """."""
     old_termios = None
     last_m_personal = 0
     default_display_buffer = 200
+
+    def __init__(self):
+        self.display_buffer_length = self.default_display_buffer
+        self.display_buffer = []
+        self.page_mode = 0
+        self.num_lines = 0
+        try:
+            self.term_width = int(os.environ['COLUMNS'])
+            self.term_height = int(os.environ['LINES'])
+        except (KeyError, ValueError):
+            pass
+
+        parser = optparse.OptionParser()
+        parser.add_option('-g', dest='group', default=DEFAULT_GROUP,
+                          help='Group to login to.')
+        parser.add_option('-n', dest='nickname', default=getpass.getuser(),
+                          help='Your nickname uniquely identifying you to'
+                          ' everyone on the server.')
+        parser.add_option('-l', dest='login', default='icbhead',
+                          help='Local username to appear in your whois info.')
+        parser.add_option('-s', dest='server', help='Server hostname.')
+        parser.add_option('--debug', action='store_true', dest='debug',
+                          help='Start with all full debug prints enabled.')
+        options, args = parser.parse_args()
+
+        self.print_line('Welcome to icbhead: An Internet Citizens Band client'
+                        ' written in Python 3.')
+        IcbSimple.__init__(self, options.nickname, options.group,
+                           options.login, options.server)
+        self._debug = options.debug
+        self._keepalive_seconds = KEEPALIVE_SECONDS
+
 
     def on_stop(self, sig, stack):
         self.restore_termios()
@@ -788,8 +826,8 @@ class IcbTerminalApp(IcbSimple):
                         userline = self.user_recv()
                         self.process_user(userline)
                     if server_ready:
-                        self.recv()
-                        self.show()
+                        packet = self.recv()
+                        self.show(packet)
                     if _now() > self._keepalive_expire_time:
                         self._ignore_next_ping = True
                         self.command('ping', '')
@@ -815,39 +853,6 @@ class IcbTerminalApp(IcbSimple):
 
         finally:
             self.restore_termios()
-
-    def __init__(self):
-        self.display_buffer_length = self.default_display_buffer
-        self.display_buffer = []
-
-        self.page_mode = 0
-        self.num_lines = 0
-
-        try:
-            self.term_width = int(os.environ['COLUMNS'])
-            self.term_height = int(os.environ['LINES'])
-        except (KeyError, ValueError):
-            pass
-
-        # process args
-        parser = optparse.OptionParser()
-        parser.add_option('-g', dest='group', default=DEFAULT_GROUP,
-                          help='Group to login to.')
-        parser.add_option('-n', dest='nickname', default=getpass.getuser(),
-                          help='Your nickname uniquely identifying you to'
-                          ' everyone on the server.')
-        parser.add_option('-l', dest='login', default='icbhead',
-                          help='Local username to appear in your whois info.')
-        parser.add_option('-s', dest='server', help='Server hostname.')
-        parser.add_option('--debug', action='store_true', dest='debug',
-                          help='Start with all full debug prints enabled.')
-        options, args = parser.parse_args()
-
-        self.print_line('Welcome to icbhead: An Internet Citizens Band client'
-                        ' written in Python 3.')
-        IcbSimple.__init__(self, options.nickname, options.group,
-                           options.login, options.server)
-        self._debug = options.debug
 
     def run(self):
         """Connect, login and run the main loop."""
