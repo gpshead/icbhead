@@ -9,14 +9,34 @@ there is no real license on this.  Use it at your own risk.
 I'll sort that out later, I'd like to Apache 2 license the entire thing.
 
 Status:
-* bare bones, differences from the old icb.py so far are:
+* skimpy bones, differences from the old icb.py so far are:
   - Requires Python 3.1 or later to run.
     (how's that for keeping the rabble away?)
   - No longer word wraps long lines coming from other people as open
     messages as that breaks URLs.
-  - Does word wrap your own longer than 239 char lines into multiple
-    messages.  Up to 2x that limit anyways (don't be line spammy).
-  - Does shorten long URLs in your own lines using goo.gl.
+  - It word wraps your own longer than 239 char lines into multiple
+    messages.  Input is capped at 2x that limit anyways (no spammies).
+  - It shortens long URLs in your own lines using goo.gl.
+  - It prefixes openmsg and privmsg lines with a timestamp.
+  - It periodically sends a ping over the connection to avoid NAT
+    timeouts from dropping it while everyone is at a cocktail party.
+
+TODO list:
+* Refactoring and code improvements:
+  - Refactor the long if/elif blocks to method dispatch.
+  - Add unittests for much of the old code.
+* URL shortening:
+  - Optionally goo.gl incoming URLs (is that wise?).
+  - On goo.gl shortened URLs include a (note.com) mention after them with
+    the original domain name if it is not rediculiously long.
+* Implementation and usability improvements:
+  - Intelligently word wrap incoming text by detecting URLs and never
+    breaking them for optimal cut and paste action.
+  - Investigate using readline. That the ancient code implements its own
+    basic input & line editing is sad.
+  - Move the network IO and update of the chat log into its own thread
+    and scrolling region so that a partially typed message doesn't cause
+    a backlog of scroll.
 
 Gregory P. Smith
 greg@krypto.org
