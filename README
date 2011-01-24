@@ -12,8 +12,8 @@ Status:
 * skimpy bones, differences from the old icb.py so far are:
   - Requires Python 3.1 or later to run.
     (how's that for keeping the rabble away?)
-  - No longer word wraps long lines coming from other people as open
-    messages as that breaks URLs.
+  - No longer word wraps long lines coming from other people as that
+    breaks URLs.
   - It word wraps your own longer than 239 char lines into multiple
     messages.  Input is capped at 2x that limit anyways (no spammies).
   - It shortens long URLs in your own lines using goo.gl.
