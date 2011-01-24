@@ -22,7 +22,8 @@ import goo_gl
 _ICBHEAD_URL_SHORTENER_API_KEY = 'AIzaSyDtceai_ZCBqny5SQf8ccvRCAEAnG8tOZI'
 
 
-_now = time.time  # Use _now() for convenience, testing & readability.
+_now = time.time  # Used for convenience, testing & readability.
+_now_tuple = time.localtime
 
 
 class IcbConn(object):
@@ -162,9 +163,9 @@ class IcbConn(object):
         msg += msglist[0]
         try:
             msg += msglist[1]
-        except:
-            print('send ignoring exception on msglist[1] append.')
-            pass  # XXX(gps): what is this for ???
+        except Exception as e:
+            print('send ignoring exception on msglist[1] append: {}'.format(e))
+            pass  # XXX(gps): what is exception expected for ??
         for i in msglist[2:]:
             msg += b'\001' + i
         msg += b'\000'
@@ -178,6 +179,8 @@ class IcbConn(object):
     def login(self, command=b'login'):
         self.send([self.M_LOGIN, self.logid, self.nickname, self.group,
                    command, b''])
+        # TODO(gps): Turn echoback verbose on and change our code to not
+        # display what we just typed unless it was changed by openmsg().
 
     def close(self):
         self.socket.close()
@@ -286,7 +289,7 @@ class IcbSimple(IcbConn):
 
     @property
     def _time(self):
-        localtime = time.localtime()
+        localtime = _now_tuple()
         day_of_month = localtime[2]
         if day_of_month == self._day_of_month:
             return time.strftime('%H:%M', localtime)
@@ -295,7 +298,6 @@ class IcbSimple(IcbConn):
             return time.strftime('%b %d %H:%M', localtime)
 
     def do_M_LOGIN(self, p):
-        print(p)
         self.print_line('Logged in.')
 
     def do_M_OPENMSG(self, p):
