@@ -1,7 +1,8 @@
 #!/usr/bin/python3
 
-import getopt
+# Standard library.
 import getpass
+import optparse  # For 3.1 compatibility.  I'd rather use argparse.
 import os
 import select
 import signal
@@ -14,7 +15,11 @@ except ImportError:
 import textwrap
 import time
 
+# Our modules.
 import goo_gl
+
+
+DEFAULT_GROUP = '~IDLE~'
 
 
 # This is my API key for icbhead on goo.gl.  If it gets abused I will
@@ -75,7 +80,7 @@ class IcbConn(object):
         if group is not None:
             self.group = group.encode(self.codec)
         else:
-            self.group = b'~IDLE~'
+            self.group = DEFAULT_GROUP.encode(self.codec)
         if server is not None:
             server = server.lower()
             if server in self.server_dict:
@@ -812,11 +817,6 @@ class IcbTerminalApp(IcbSimple):
             self.restore_termios()
 
     def __init__(self):
-        nick = None
-        logid = None
-        group = None
-        server = None
-
         self.display_buffer_length = self.default_display_buffer
         self.display_buffer = []
 
@@ -830,29 +830,27 @@ class IcbTerminalApp(IcbSimple):
             pass
 
         # process args
-        try:
-            optlist, args = getopt.getopt(sys.argv[1:],'g:n:l:s:w')
-        except getopt.error as detail:
-            self.print_line('error: %r' % detail)
-            self.print_line('usage: %s [-g group] [-n nickname] [-l login] [-s server] [-w]' % (sys.argv[0]))
-            return
-        for i in optlist:
-            if i[0] == '-g':
-                group = i[1]
-            elif i[0] == '-n':
-                nick = i[1]
-            elif i[0] == '-l':
-                logid = i[1]
-            elif i[0] == '-w':
-                command = b'w'
-            elif i[0] == '-s':
-                server = i[1]
+        parser = optparse.OptionParser()
+        parser.add_option('-g', dest='group', default=DEFAULT_GROUP,
+                          help='Group to login to.')
+        parser.add_option('-n', dest='nickname', default=getpass.getuser(),
+                          help='Your nickname uniquely identifying you to'
+                          ' everyone on the server.')
+        parser.add_option('-l', dest='login', default='icbhead',
+                          help='Local username to appear in your whois info.')
+        parser.add_option('-s', dest='server', help='Server hostname.')
+        parser.add_option('--debug', action='store_true', dest='debug',
+                          help='Start with all full debug prints enabled.')
+        options, args = parser.parse_args()
 
-        self.print_line(
-                'Welcome to icbhead: An Internet Citizens Band client'
-                ' written in Python.')
-        IcbSimple.__init__(self,nick,group,logid,server)
-        # TODO(gps): Remove this connect/login/mainloop from the constructor.
+        self.print_line('Welcome to icbhead: An Internet Citizens Band client'
+                        ' written in Python 3.')
+        IcbSimple.__init__(self, options.nickname, options.group,
+                           options.login, options.server)
+        self._debug = options.debug
+
+    def run(self):
+        """Connect, login and run the main loop."""
         try:
             self.connect()
         except socket.error as detail:
@@ -862,15 +860,10 @@ class IcbTerminalApp(IcbSimple):
         self.mainloop()
 
 
-class IcbPersonalized(IcbTerminalApp):
-    pass
+def main():
+    session = IcbTerminalApp()
+    session.run()
 
 
 if __name__ == '__main__':
-    customfile = os.environ['HOME'] + '/.icbrc'
-    try:
-        # TODO(gps): eew!  die.  die.
-        exec(open(customfile).read())
-    except IOError:
-        pass
-    session = IcbPersonalized()
+    main()
