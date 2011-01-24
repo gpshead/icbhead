@@ -22,6 +22,9 @@ import goo_gl
 _ICBHEAD_URL_SHORTENER_API_KEY = 'AIzaSyDtceai_ZCBqny5SQf8ccvRCAEAnG8tOZI'
 
 
+_now = time.time  # Use _now() for convenience, testing & readability.
+
+
 class IcbConn(object):
     _debug = False
     default_server = 'default'
@@ -37,6 +40,11 @@ class IcbConn(object):
 
     MAX_LINE = 239
     MAX_INPUT_LINE = MAX_LINE * 2
+
+    # Help avoid NAT timeouts or other network disconnect issues.  If no
+    # communication between client and server has happened in this long,
+    # send a ping and ignore the response.
+    KEEPALIVE_SECONDS = 1543
 
     M_LOGIN = b'a'
     M_OPENMSG = b'b'
@@ -83,6 +91,8 @@ class IcbConn(object):
         else:
             self.port = self.server_dict[self.default_server][1]
         self.socket = None
+        # Time we last sent or received data over the socket.
+        self._last_data_time = 0
 
     def read_config_file(self, config_file=None):
         if config_file is None:
@@ -116,6 +126,7 @@ class IcbConn(object):
     def connect(self):
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.socket.connect((self.server, self.port))
+        self._last_data_time = _now()
 
     def fileno(self):
         return self.socket.fileno()
@@ -136,6 +147,7 @@ class IcbConn(object):
             length = ord(self.socket.recv(1))
         if length != 1:
             msg += self.__recv(length)
+        self._last_data_time = _now()
         return_list = [bytes(msg[0:1])]
         if len(msg) > 2:
             return_list.extend(bytes(m) for m in msg[1:-1].split(b'\001'))
@@ -161,6 +173,7 @@ class IcbConn(object):
             msg = msg[:255]
         msg[0] = len(msg) - 1  # Fill in the length (sans length byte).
         self.socket.send(msg)
+        self._last_data_time = _now()
 
     def login(self, command=b'login'):
         self.send([self.M_LOGIN, self.logid, self.nickname, self.group,
@@ -239,7 +252,11 @@ class IcbSimple(IcbConn):
     class IcbQuitException(Exception):
         """Used internally to signal when to close this icb session."""
     m_personal_history = []
+    # Last day of the month we printed a message so that we can print
+    # the month and day once anytime it changes.
     _day_of_month = -1
+    # Used by the keepalive mechanism to ignore a keepalive self ping.
+    _ignore_next_ping = False
 
     def pretty_time(self, secs):
         if secs == 0:
@@ -253,7 +270,7 @@ class IcbSimple(IcbConn):
 
     def print_line(self, line):
         output_line = line
-        now = time.time()
+        now = _now()
         if (self.alert_mode == 1) and (now - self.last_alert > 0.5):
             output_line = '\007' + output_line
             self.last_alert = now
@@ -409,7 +426,10 @@ class IcbSimple(IcbConn):
                        '%s has annoyingly beeped you.' % self._decode(p[1])])
 
     def do_M_PING(self, p):
-        print('ping')
+        if self._ignore_next_ping:
+            self._ignore_next_ping = False
+            return
+        print('received a server ping.')
 
     def do_M_PONG(self, p):
         print('pong')
@@ -454,6 +474,10 @@ class IcbSimple(IcbConn):
         else:
             self.do_M_unknown(p)
 
+    @property
+    def _keepalive_expire_time(self):
+        return self._last_data_time + self.KEEPALIVE_SECONDS
+
     def select(self):
         user_ready = 0
         server_ready = 0
@@ -461,11 +485,13 @@ class IcbSimple(IcbConn):
         iobjs = []
         oobjs = []
         eobjs = []
+        keepalive_timeout = max(self._keepalive_expire_time - _now(), 10)
         try:
             iobjs, oobjs, eobjs = select.select(
                     [self.input_file, self],
                     [],
-                    [self])
+                    [self],
+                    keepalive_timeout)
         except select.error:
             pass
         if self.input_file in iobjs:
@@ -537,14 +563,14 @@ class IcbSimple(IcbConn):
             self.command(cmd, line)
 
     def _parse_cmd(self, command_line):
-        cmd_split = 0
-        while (cmd_split < len(command_line) and
-               command_line[cmd_split] not in ' \t'):
-            cmd_split += 1
-        cmd = command_line[:cmd_split].lower()
-        if cmd_split < len(command_line):
-            cmd_split += 1
-        self.process_cmd(cmd, command_line[cmd_split:])
+        cmd_split = command_line.split(None, 1)
+        cmd = ''
+        if cmd_split:
+            cmd = cmd_split.pop(0)
+        args = ''
+        if cmd_split:
+            args = cmd_split[0]
+        self.process_cmd(cmd, args)
 
     def process_user(self, userline):
         if not userline:
@@ -757,9 +783,12 @@ class IcbTerminalApp(IcbSimple):
                     if server_ready:
                         self.recv()
                         self.show()
+                    if _now() > self._keepalive_expire_time:
+                        self._ignore_next_ping = True
+                        self.command('ping', '')
 
                 except KeyboardInterrupt:
-                    self.output_file.write('really exit? [yn]')
+                    self.output_file.write('really exit? [Yn]')
                     ans = self.input_file.read(1)
                     if ans[0] in 'yY\n':
                         self.output_file.write('\nexiting...\n')
@@ -771,6 +800,7 @@ class IcbTerminalApp(IcbSimple):
                     break
 
                 except socket.error:
+                    # TODO(gps): Implement periodic connection retry.
                     self.output_file.write(
                             '\nError: lost connection with server. Exiting.\n')
                     self.close()
