@@ -519,7 +519,7 @@ class IcbSimple(IcbConn):
 
     def _truncate_long_userinput(self, userline):
         if len(userline) > self.MAX_LINE:
-            userline = userline[:MAX_LINE]
+            userline = userline[:self.MAX_LINE]
             self.indent_print('[ Error ]', 'input line too long.')
             self.indent_print('[ Error ]', 'truncated to: \'%s\'' % userline)
         return userline
