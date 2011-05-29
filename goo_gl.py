@@ -5,6 +5,7 @@
 import http.client
 import json
 import re
+import urllib.parse
 
 
 # http://daringfireball.net/2010/07/improved_regex_for_matching_urls
@@ -54,8 +55,22 @@ def shorten_url(long_url, api_key=''):
     raise Error('server {} error.'.format(response.status))
 
 
-def shorten_long_urls(text, long_len=55, api_key=''):
-    """Return text with all long URLs replaced with short ones."""
+def shorten_long_urls(text, long_len=55, api_key='', include_note=False,
+                      max_note_len=110):
+    """Return text with all long URLs replaced with short ones.
+
+    Args:
+        long_len: The length of a URL before it will be shortened.
+        api_key: Optional, the goo.gl API key for your application.
+        include_note: If true a parenthesized summary of the url
+            domain and last path elements will be included after the
+            short URL.
+        max_note_len: The maximum length of an included note before it
+            is elided.
+
+    Returns:
+        text with URLs replaces as appropriate.
+    """
     urls = [group[0] for group in _EXTRACT_URL_RE.findall(text)]
     if not urls:
         return text
@@ -64,9 +79,41 @@ def shorten_long_urls(text, long_len=55, api_key=''):
             continue
         try:
             short_url = shorten_url(url, api_key=api_key)
-            text = text.replace(url, short_url)
         except Error:
             pass  # Best Effort: ignore and skip failed shortens.
+        else:
+            if include_note:
+                try:
+                    note = _generate_url_note(url, max_note_len)
+                except Exception:
+                    pass
+                short_url = '%s (%s)' % (short_url, note)
+            text = text.replace(url, short_url)
     return text
+
+
+# Used to strip off the ending three letter or pair or two letter TLDs + port.
+_STRIP_DOMAIN_END_RE = re.compile(r'\.[a-z]{2,3}(\.[a-z]{2})?(:\d+)?$', re.I)
+
+
+def _generate_url_note(url, max_note_len):
+    """Given a URL generate some summary text of the URL."""
+    parsed = urllib.parse.urlparse(url)
+    path_parts = parsed.path.split('/')
+    max_path_part = ''
+    for part in reversed(path_parts):
+        if len(part) > len(max_path_part):
+            max_path_part = part
+    tasty_path = max_path_part
+    domain = _STRIP_DOMAIN_END_RE.sub('', parsed.netloc)
+    if len(domain) > max_note_len - len(tasty_path) - 3:
+        note = tasty_path
+    elif tasty_path and domain:
+        note = '%s [%s]' % (tasty_path, domain)
+    elif domain:
+        note = '[%s]' % (domain,)
+    else:
+        raise Error('cannot make a note for this url ' + str(parsed))
+    return note
 
 

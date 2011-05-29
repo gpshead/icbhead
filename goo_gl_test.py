@@ -57,28 +57,57 @@ class ShortenURLTest(unittest.TestCase):
 
 
 class ShortenLongURLsTest(unittest.TestCase):
+    @staticmethod
+    def _mock_shorten_url(url, api_key=''):
+        return 'http://mock/' + hex(hash(url))[-6:]
+
+    _text = """long body of text with https://example.com/urls/in/it
+    as well as some http://goo.gl/shorter urls in it.
+    http://a0.twimg.com/profile_images/710094757/3468746237_54b25f56cb_t.jpg
+    """
+    _long_urls = ('https://example.com/urls/in/it',
+                  'http://a0.twimg.com/profile_images/710094757/'
+                  '3468746237_54b25f56cb_t.jpg')
+    _long_url_notes = ('urls [example]',
+                       '3468746237_54b25f56cb_t.jpg [a0.twimg]')
+
     def setUp(self):
         self._ORIG_shorten_url = goo_gl.shorten_url
-        goo_gl.shorten_url = lambda url, api_key='': str(hash(url))
+        goo_gl.shorten_url = self._mock_shorten_url
+
+        # Setup the test data.
+        self._fake_short_urls = [self._mock_shorten_url(url) for url in
+                                 self._long_urls]
+        self._test_url_info = zip(self._long_urls, self._fake_short_urls,
+                                  self._long_url_notes)
 
     def tearDown(self):
         goo_gl.shorten_url = self._ORIG_shorten_url
 
     def test_shorten_long_urls(self):
-        text = """long body of text with https://example.com/urls/in/it
-        as well as some http://goo.gl/shorter urls in it.
-        http://a0.twimg.com/profile_images/710094757/3468746237_54b25f56cb_t.jpg
-        """
-        long_urls = ('https://example.com/urls/in/it',
-                     'http://a0.twimg.com/profile_images/710094757/'
-                     '3468746237_54b25f56cb_t.jpg')
-        fake_short_urls = [str(hash(url)) for url in long_urls]
-        new_text = goo_gl.shorten_long_urls(text, 26)
+        new_text = goo_gl.shorten_long_urls(self._text, 26)
+        self.assertLess(len(new_text), len(self._text))
         self.assertIn('http://goo.gl/shorter', new_text)
-        for long_url, fake_short_url in zip(long_urls, fake_short_urls):
-            self.assertIn(long_url, text)
+        for long_url, fake_short_url, _ in self._test_url_info:
+            self.assertIn(long_url, self._text)
             self.assertNotIn(long_url, new_text)
             self.assertIn(fake_short_url, new_text)
+
+    def test_shorten_long_urls_with_note(self):
+        new_text = goo_gl.shorten_long_urls(self._text, 26, include_note=True)
+        self.assertIn('http://goo.gl/shorter', new_text)
+        for long_url, fake_short_url, url_note in self._test_url_info:
+            self.assertIn(long_url, self._text)
+            self.assertNotIn(url_note, self._text)
+            self.assertNotIn(long_url, new_text)
+            self.assertIn(url_note, new_text)
+            self.assertIn(fake_short_url, new_text)
+
+    def test_generate_url_note(self):
+        note = goo_gl._generate_url_note('http://example.com/', 50)
+        self.assertEqual('[example]', note)
+        note = goo_gl._generate_url_note('http://example.com/foo/bar/xx', 50)
+        self.assertEqual('bar [example]', note)
 
 
 if __name__ == '__main__':
