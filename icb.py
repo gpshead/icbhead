@@ -243,7 +243,8 @@ class IcbConn(object):
                          ' of length {1} or less.'.format(msg, max_bytes))
 
     def openmsg(self, msg):
-        msg = goo_gl.shorten_long_urls(msg, api_key=_ICBHEAD_URL_SHORTENER_API_KEY)
+        msg = goo_gl.shorten_long_urls(msg,
+                api_key=_ICBHEAD_URL_SHORTENER_API_KEY, include_note=True)
         encoded_messages = self._wrap_and_encode(msg, self.MAX_LINE)
         for encoded_msg in encoded_messages:
             self.send([self.M_OPENMSG, encoded_msg])
