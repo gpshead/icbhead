@@ -87,7 +87,8 @@ def shorten_long_urls(text, long_len=55, api_key='', include_note=False,
                     note = _generate_url_note(url, max_note_len)
                 except Exception:
                     pass
-                short_url = '%s (%s)' % (short_url, note)
+                else:
+                    short_url = '%s (%s)' % (short_url, note)
             text = text.replace(url, short_url)
     return text
 
