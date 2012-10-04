@@ -69,7 +69,7 @@ def shorten_long_urls(text, long_len=55, api_key='', include_note=False,
             is elided.
 
     Returns:
-        text with URLs replaces as appropriate.
+        text with URLs replaced as appropriate.
     """
     urls = [group[0] for group in _EXTRACT_URL_RE.findall(text)]
     if not urls:
