@@ -3,10 +3,9 @@
 This code was originally derived from the old Python icb client code from
  http://a.armory.com/~zenomt/icb.py
 
-I have no idea what the license on that is.  So until I find out,
-there is no real license on this.  Use it at your own risk.
-
-I'll sort that out later, I'd like to Apache 2 license the entire thing.
+That code did not originally have a license on it (eek!) when I forked
+it to start this project.  A BSD style license was later added by the
+author and has since been added and adopted here.
 
 Status:
 * skimpy bones, differences from the old icb.py so far are:
