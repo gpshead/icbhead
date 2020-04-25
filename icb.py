@@ -28,6 +28,7 @@
 
 # Standard library.
 import getpass
+import errno
 import optparse  # For 3.1 compatibility.  I'd rather use argparse.
 import os
 import random
@@ -157,8 +158,13 @@ class IcbConn(object):
             i = f.readline()
 
     def connect(self):
-        self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.socket.connect((self.server, self.port))
+        try:
+            self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.socket.connect((self.server, self.port))
+        except OSError as err:
+            if err.errno == errno.EAFNOSUPPORT:
+                self.socket = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
+                self.socket.connect((self.server, self.port))
         self._last_data_time = _now()
 
     def fileno(self):
@@ -873,8 +879,10 @@ class IcbTerminalApp(IcbSimple):
 
                 except socket.error:
                     # TODO(gps): Implement periodic connection retry.
+                    timestamp = time.strftime('%b %d %H:%M', _now_tuple())
                     self.output_file.write(
-                            '\nError: lost connection with server. Exiting.\n')
+                            f'\nError: lost connection with server on '
+                            f'{timestamp}.  Exiting.\n')
                     self.close()
                     break
 
